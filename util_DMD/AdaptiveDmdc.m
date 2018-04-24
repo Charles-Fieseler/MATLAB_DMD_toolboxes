@@ -383,7 +383,17 @@ classdef AdaptiveDmdc < AbstractDmd
                     x_ind = self.x_indices;
                     
                 otherwise
-                    this_error('Sort mode not recognized')
+                    error('Sort mode not recognized')
+            end
+            
+            if isempty(self.error_outliers)
+                % Just for later plotting
+                X1_original = X(:,1:end-1);
+                X2_original = X(:,2:end);
+                A = X2_original / X1_original;
+                self.neuron_errors = A*X1_original-X2_original;
+                self.error_outliers = self.calc_error_outliers(self.neuron_errors, ...
+                            self.filter_window_size, self.outlier_window_size);
             end
             
             self.x_indices = x_ind;
