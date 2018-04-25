@@ -66,9 +66,10 @@ for i=2:prams.max_iter
             if length(find(diff(all_errors>error_max))) < 2
                 % Note: diff() because we want to continue if:
                 %   all_errors>error_max = [0 0 0 1 1 1]
-                tol_factor = (all_errors(i)-error_max)/all_errors(i);
-            fprintf('  Error exceeded max; multiplying threshold by %.2f\n',...
-                tol_factor)
+                tol_factor = abs(all_errors(i)-error_max) / ...
+                    (all_errors(i)+error_max);
+                fprintf('  Error exceeded max; multiplying threshold by %.2f\n',...
+                    tol_factor)
                 prams.min_tol = prams.min_tol * tol_factor;
             else
                 disp('  Error exceeded maximum again; aborting')
@@ -83,12 +84,12 @@ for i=2:prams.max_iter
             % sparseness goal and set that as the threshold
             nnz_goal = round(total_num_elem*prams.sparsity_goal);
             f = @(x) abs(length(A_sparse(A_sparse>x))-nnz_goal);
-            goal_tol = fminbnd(f,prams.min_tol,max(max(A_sparse)));
-            tol_factor = (all_errors(i)-error_max)/all_errors(i);
+            goal_tol = fminbnd(f, prams.min_tol, max(max(A_sparse)));
+            tol_factor = abs(all_errors(i)-error_max) / ...
+                (all_errors(i)+error_max);
             % Move a percentaget towards the ideal goal in relation to how
             % much error we can increase
-            prams.min_tol = (prams.min_tol+tol_factor*goal_tol) / ...
-                (1 + tol_factor);
+            prams.min_tol = prams.min_tol + tol_factor*goal_tol;
             
             fprintf('  Stall predicted; new tolerance is %.2f\n',...
                 prams.min_tol)
