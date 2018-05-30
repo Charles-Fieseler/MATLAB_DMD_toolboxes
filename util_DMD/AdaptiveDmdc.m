@@ -58,6 +58,8 @@ classdef AdaptiveDmdc < AbstractDmd
         u_sort_ind
         x_indices
         id_struct
+        % External matrix of dynamics
+        external_A_orig
         % Plotting options
         to_plot_nothing
         to_plot_cutoff
@@ -186,6 +188,7 @@ classdef AdaptiveDmdc < AbstractDmd
                 'which_plot_data_and_filter', 0,...
                 'to_plot_data_and_outliers', false,...
                 'dmd_mode', 'naive',...
+                'external_A_orig', [],...
                 'sparsity_goal', 0.6,...
                 'cutoff_multiplier', 1.0,...
                 'to_print_error', false, ...
@@ -499,6 +502,13 @@ classdef AdaptiveDmdc < AbstractDmd
                     [w,e,b,atilde,u,A_orig] = optdmd(X',t,r, 1);
                     A_sep = [A_orig(1:x_length,:);...
                         zeros(x_length, size(A_orig,2))];
+                    
+                case 'external'
+                    % Uses externally defined dynamics
+                    A_orig = self.external_A_orig;
+                    A_sep = [A_orig(1:x_length,:);...
+                        zeros(x_length, size(A_orig,2))];
+                    
                 otherwise
                     error('Unrecognized dmd mode')
             end
@@ -642,7 +652,10 @@ classdef AdaptiveDmdc < AbstractDmd
                 names = 'Neuron names not stored';
                 return
             end
-            if ~exist('use_original_order','var')
+            if ~exist('neuron_ind','var') || isempty(neuron_ind)
+                neuron_ind = 1:self.x_len;
+            end 
+            if ~exist('use_original_order','var')|| isempty(use_original_order)
                 use_original_order = true;
             end
             if ~exist('print_names','var')
@@ -765,29 +778,42 @@ classdef AdaptiveDmdc < AbstractDmd
         end
         
         function error_approx = calc_reconstruction_error(self, ...
-                which_norm, varargin)
+                which_norm, use_persistence, varargin)
             % Does not include the control signal
             % User can specify a particular mode (2-norm, etc)
+            %   If that norm has parameters, those can be passed in after
             if ~exist('which_norm','var') || isempty(which_norm)
                 which_norm = '2norm';
             end
+            if ~exist('use_persistence','var') || isempty(use_persistence)
+                use_persistence = false;
+            end
             % Does not include the control signal (which has 0 error)
-            dat_approx = self.calc_reconstruction_control([],[],false);
             dat_original = self.dat(1:self.x_len,:);
+            if ~use_persistence
+                dat_approx = self.calc_reconstruction_control([],[],false);
+            else
+                % Null model comparison
+                dat_approx = repmat(dat_original(:,1), ...
+                    [1, size(dat_original,2)]);
+            end
             
             switch which_norm
                 case '2norm'
                     error_approx = ...
                         norm(dat_approx-dat_original)/numel(dat_approx);
+                    
                 case 'Inf'
                     error_approx = ...
                         norm(dat_approx-dat_original,Inf)/numel(dat_approx);
+                    
                 case 'expnorm'
                     lambda = varargin{1};
                     assert(lambda>0, 'The length scale should be positive')
                     error_approx = sum(sum(...
                         exp((dat_approx-dat_original)./lambda) )) / ...
                         numel(dat_approx);
+                    
                 case 'flat_then_2norm'
                     error_approx = dat_approx-dat_original;
                     if nargin < 3
