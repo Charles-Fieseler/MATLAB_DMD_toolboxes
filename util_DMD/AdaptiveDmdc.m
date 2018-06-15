@@ -69,6 +69,7 @@ classdef AdaptiveDmdc < AbstractDmd
         to_plot_data_and_outliers
         
         dmd_mode
+        what_to_do_dmd_explosion
         sparsity_goal % if dmd_mode==sparse
         to_print_error
         % Outlier calculation settings
@@ -188,6 +189,7 @@ classdef AdaptiveDmdc < AbstractDmd
                 'which_plot_data_and_filter', 0,...
                 'to_plot_data_and_outliers', false,...
                 'dmd_mode', 'naive',...
+                'what_to_do_dmd_explosion','error',...
                 'external_A_orig', [],...
                 'sparsity_goal', 0.6,...
                 'cutoff_multiplier', 1.0,...
@@ -278,14 +280,14 @@ classdef AdaptiveDmdc < AbstractDmd
                     x_ind = find(self.neuron_errors < cutoff_val);
                     
                     % Plot the cutoff as sanity check
-                    if self.to_plot_cutoff
-                        figure;
-                        plot(self.neuron_errors)
-                        hold on;
-                        vec = ones(size(self.neuron_errors'));
-                        plot(cutoff_val*vec, 'r')
-                        title('DMD reconstruction error cutoff')
-                    end
+%                     if self.to_plot_cutoff
+%                         figure;
+%                         plot(self.neuron_errors)
+%                         hold on;
+%                         vec = ones(size(self.neuron_errors'));
+%                         plot(cutoff_val*vec, 'r')
+%                         title('DMD reconstruction error cutoff')
+%                     end
                     
                 case 'DMD_error_exp'
                     lambda = 0.05; % For Zimmer data
@@ -301,14 +303,14 @@ classdef AdaptiveDmdc < AbstractDmd
                     x_ind = find(self.neuron_errors < cutoff_val);
                     
                     % Plot the cutoff as sanity check
-                    if self.to_plot_cutoff
-                        figure;
-                        plot(self.neuron_errors)
-                        hold on;
-                        vec = ones(size(self.neuron_errors'));
-                        plot(cutoff_val*vec, 'r')
-                        title('DMD reconstruction error cutoff')
-                    end
+%                     if self.to_plot_cutoff
+%                         figure;
+%                         plot(self.neuron_errors)
+%                         hold on;
+%                         vec = ones(size(self.neuron_errors'));
+%                         plot(cutoff_val*vec, 'r')
+%                         title('DMD reconstruction error cutoff')
+%                     end
                     
                 case 'DMD_error_normalized'
                     X1_original = X(:,1:end-1);
@@ -322,14 +324,14 @@ classdef AdaptiveDmdc < AbstractDmd
                         std(self.neuron_errors)*self.cutoff_multiplier );
                     x_ind = find(self.neuron_errors < cutoff_val);
                     % Plot the cutoff as sanity check
-                    if self.to_plot_cutoff
-                        figure;
-                        plot(self.neuron_errors)
-                        hold on;
-                        vec = ones(size(self.neuron_errors'));
-                        plot(cutoff_val*vec, 'r')
-                        title('DMD reconstruction error cutoff')
-                    end
+%                     if self.to_plot_cutoff
+%                         figure;
+%                         plot(self.neuron_errors)
+%                         hold on;
+%                         vec = ones(size(self.neuron_errors'));
+%                         plot(cutoff_val*vec, 'r')
+%                         title('DMD reconstruction error cutoff')
+%                     end
                     
                 case 'DMD_error_outliers'
                     X1_original = X(:,1:end-1);
@@ -346,11 +348,6 @@ classdef AdaptiveDmdc < AbstractDmd
                             self.filter_window_size, self.outlier_window_size);
                         x_ind = find(~isoutlier(self.error_outliers,...
                             'ThresholdFactor', self.cutoff_multiplier));
-                    end
-                    
-                    if self.to_plot_cutoff
-                        self.plot_data_and_outliers(self.error_outliers,[],true);
-                        title('Error signal detected and threshold')
                     end
                     
                 case 'DMD_error_outliers_sparse'
@@ -372,11 +369,6 @@ classdef AdaptiveDmdc < AbstractDmd
                             'ThresholdFactor', self.cutoff_multiplier));
                     end
                     
-                    if self.to_plot_cutoff
-                        self.plot_data_and_outliers(self.error_outliers,[],true);
-                        title('Error signal detected and threshold')
-                    end
-                    
                 case 'random'
                     tmp = randperm(size(X,1));
                     x_ind = tmp(1:round(size(X,1)-...
@@ -387,6 +379,13 @@ classdef AdaptiveDmdc < AbstractDmd
                     
                 otherwise
                     error('Sort mode not recognized')
+            end
+            
+            self.x_len = length(find(x_ind));
+            
+            if self.to_plot_cutoff
+                self.plot_data_and_outliers(self.error_outliers,[],true);
+                title('Error signal detected and threshold')
             end
             
             if isempty(self.error_outliers)
@@ -418,7 +417,6 @@ classdef AdaptiveDmdc < AbstractDmd
             u_ind(x_ind) = false;
             
             u_length = length(find(u_ind));
-            x_length = length(find(x_ind));
             
             % Sort the data: control signals in last columns
             [~, self.u_sort_ind] = sort(u_ind);
@@ -426,7 +424,6 @@ classdef AdaptiveDmdc < AbstractDmd
             self.dat = X;
             
             self.u_len = u_length;
-            self.x_len = x_length;
             self.u_indices = u_ind;
             
         end
@@ -503,6 +500,30 @@ classdef AdaptiveDmdc < AbstractDmd
                     A_sep = [A_orig(1:x_length,:);...
                         zeros(x_length, size(A_orig,2))];
                     
+                case 'func_DMDc'
+                    % Uses Zhe's code
+                    %   Note: have to decide on a truncation rank for both
+                    %   the dynamics and the control signal
+                    X1 = X1_original(1:x_length,:);
+                    X2 = X2_original(1:x_length,:);
+                    Upsilon = X1_original((x_length+1):end,:);
+                    r = round(x_length/2); % HACKY
+                    rtilde = round(u_length/1.5); % HACKY
+                    
+                    [~, ~, Bhat, ~, Uhat, ~, ~, ~, ~, ~, Atilde] = ...
+                        func_DMDc(X1, X2, Upsilon, r, rtilde);
+                    
+                    U = Uhat(:,1:r);
+                    A = U*Atilde*U';
+                    % Concatenating them is the format this object expects
+                    A_orig = [A Bhat];
+                    A_orig = [A_orig; zeros(u_length, size(A_orig,2))];
+                    A_sep = A_orig;
+                    
+                    sz = size(X2_original);
+                    X2_sep = [X2_original(1:x_length,:);
+                        zeros(u_length,sz(2)) ];
+                    
                 case 'external'
                     % Uses externally defined dynamics
                     A_orig = self.external_A_orig;
@@ -511,6 +532,29 @@ classdef AdaptiveDmdc < AbstractDmd
                     
                 otherwise
                     error('Unrecognized dmd mode')
+            end
+            
+            % Calculate the eigenvalues (need all because they might not
+            % converge)
+            A = A_orig(1:x_length,1:x_length);
+            [V, D] = eig(A, 'vector'); 
+            if max(abs(D)) > 1.0
+                switch self.what_to_do_dmd_explosion
+                    case 'error'
+                        error('DMD eigenvalue>1; no useful prediction possible')
+                        
+                    case 'project'
+                        warning('Projecting an unstable eigenvalue onto unit circle')
+                        real_D = min(real(D),ones(size(D)));
+                        D = real_D + 1i*imag(D);
+                        A = V*diag(D)/V;
+                        % Don't change the control matrix, B
+                        A_orig(1:x_length,1:x_length) = A;
+                        A_sep(1:x_length,1:x_length) = A;
+                        
+                    otherwise
+                        error('Unrecognized method for dealing with eigenvalue > 1')
+                end
             end
             
             self.error_mat = A_orig*X1_original-X2_original;
@@ -951,7 +995,7 @@ classdef AdaptiveDmdc < AbstractDmd
                     'X2 data with u set to 0');
         end
         
-        function dat_approx = plot_reconstruction(self, ...
+        function [dat_approx, fig] = plot_reconstruction(self, ...
                 use_control, include_control_signal, to_compare_raw,...
                 neuron_ind)
             % Plots a reconstruction of the data using the stored linear
@@ -968,7 +1012,7 @@ classdef AdaptiveDmdc < AbstractDmd
             if ~exist('use_control','var')
                 use_control = false;
             end
-            if ~exist('include_control_signal','var')
+            if ~exist('include_control_signal','var') || isempty(include_control_signal)
                 include_control_signal = false;
             end
             if ~exist('to_compare_raw', 'var')
@@ -997,16 +1041,16 @@ classdef AdaptiveDmdc < AbstractDmd
             end
             if to_compare_raw
                 if neuron_ind < 1
-                    plot_2imagesc_colorbar(full_dat, dat_approx, '2 1',...
-                        'Original data', title_str);
+                    fig = plot_2imagesc_colorbar(full_dat, real(dat_approx),...
+                        '2 1', 'Original data', title_str);
                 else
                     title_str = [title_str ...
                         sprintf('; neuron %d (name=%s)',...
                         neuron_ind, self.get_names(neuron_ind))];
-                    figure;
+                    fig = figure('DefaultAxesFontSize',12);
                     hold on
-                    plot(full_dat(neuron_ind,:))
-                    plot(dat_approx(neuron_ind,:), 'LineWidth',2)
+                    plot(full_dat(neuron_ind,:), 'LineWidth', 2)
+                    plot(dat_approx(neuron_ind,:), 'LineWidth', 4)
                     legend({'Original data','Reconstructed trajectory'})
                     ylabel('Amplitude')
                     xlabel('Time')
@@ -1017,7 +1061,7 @@ classdef AdaptiveDmdc < AbstractDmd
                     end
                 end
             else
-                figure;
+                fig = figure('DefaultAxesFontSize',12);
                 if neuron_ind < 1
                     imagesc(dat_approx);
                     colorbar
@@ -1031,10 +1075,12 @@ classdef AdaptiveDmdc < AbstractDmd
                 end
                 title(title_str)
             end
+            
+            xlim([0, size(dat_approx,2)]);
         end
         
-        function plot_data_and_filter(~, dat, filter_window, outlier_window)
-            figure
+        function fig = plot_data_and_filter(~, dat, filter_window, outlier_window)
+            fig = figure('DefaultAxesFontSize',12);
             x = 1:size(dat,1);
             x_delay = x - (filter_window-1)/(2);
             plot(x, dat);
@@ -1042,10 +1088,10 @@ classdef AdaptiveDmdc < AbstractDmd
             dat_filter = filter(ones(1,filter_window)/filter_window,1,dat);
             TF = isoutlier(dat_filter,'movmedian',outlier_window,'SamplePoints',x);
             plot(x_delay,dat_filter, x_delay(TF),dat_filter(TF),'x','LineWidth',3)
-            legend('Raw Data','Weighted Moving Average','Outlier');
+            legend('Raw Data','Moving Average','Outlier');
         end
         
-        function plot_data_and_outliers(self, ...
+        function fig = plot_data_and_outliers(self, ...
                 dat, callback_func, use_original_order)
             % Plots the error signals with their outliers, using a GUI to
             % explore the individual neurons
@@ -1062,7 +1108,7 @@ classdef AdaptiveDmdc < AbstractDmd
                 use_original_order = true;
             end
             
-            figure
+            fig = figure('DefaultAxesFontSize',12);
             x = 1:size(dat,1);
             vec = ones(1,length(x));
             hold on;
@@ -1075,10 +1121,16 @@ classdef AdaptiveDmdc < AbstractDmd
             legend('Outlier',...
                 'Lower Threshold','Upper Threshold','Center Value',...
                 'Original Data')
-            ylabel(sprintf('Error (measured using %s)', self.sort_mode))
+            ylabel(sprintf('Error (measured using %s)', self.sort_mode),...
+                'Interpreter','None')
             % Use neuron names for xticklabels (many will be empty)
-            xticks(1:self.x_len)
-            xticklabels( self.get_names(1:self.x_len,...
+            if use_original_order
+                num_ticks = length(dat);
+            else
+                num_ticks = self.x_len;
+            end
+            xticks(1:num_ticks)
+            xticklabels( self.get_names(1:num_ticks,...
                 use_original_order, false));
             xtickangle(90)
             if strcmp(self.sort_mode, 'user_set')
@@ -1088,8 +1140,8 @@ classdef AdaptiveDmdc < AbstractDmd
             end
         end
         
-        function plot_data_and_exp_filter(~, dat, alpha, outlier_window)
-            figure
+        function fig = plot_data_and_exp_filter(~, dat, alpha, outlier_window)
+            fig = figure('DefaultAxisFontSize',12);
             x = 1:size(dat,1);
             x_delay = x-1;
             plot(x, dat);
@@ -1097,7 +1149,7 @@ classdef AdaptiveDmdc < AbstractDmd
             dat_filter = filter(alpha, 1-alpha, dat);
             TF = isoutlier(dat_filter,'movmedian',outlier_window,'SamplePoints',x);
             plot(x_delay,dat_filter, x_delay(TF),dat_filter(TF),'x','LineWidth',3)
-            legend('Raw Data','Weighted Moving Average','Outlier');
+            legend('Raw Data','Moving Average','Outlier');
         end
         
         function callback_plotter(self, ~, evt, dat, filter_window, outlier_window)
