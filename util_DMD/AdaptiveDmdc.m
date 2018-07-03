@@ -507,8 +507,10 @@ classdef AdaptiveDmdc < AbstractDmd
                     X1 = X1_original(1:x_length,:);
                     X2 = X2_original(1:x_length,:);
                     Upsilon = X1_original((x_length+1):end,:);
-                    r = round(x_length/2); % HACKY
-                    rtilde = round(u_length/1.5); % HACKY
+%                     r = round(x_length/2); % HACKY
+%                     rtilde = round(u_length/1.5); % HACKY
+                    r = optimal_truncation(X2);
+                    rtilde = 0; % Added adaptive discovery of truncation
                     
                     [~, ~, Bhat, ~, Uhat, ~, ~, ~, ~, ~, Atilde] = ...
                         func_DMDc(X1, X2, Upsilon, r, rtilde);
@@ -545,7 +547,7 @@ classdef AdaptiveDmdc < AbstractDmd
                         
                     case 'project'
                         warning('Projecting an unstable eigenvalue onto unit circle')
-                        real_D = min(real(D),ones(size(D)));
+                        real_D = min(real(D),ones(size(D))-1e-4);
                         D = real_D + 1i*imag(D);
                         A = V*diag(D)/V;
                         % Don't change the control matrix, B
@@ -997,7 +999,7 @@ classdef AdaptiveDmdc < AbstractDmd
         
         function [dat_approx, fig] = plot_reconstruction(self, ...
                 use_control, include_control_signal, to_compare_raw,...
-                neuron_ind)
+                neuron_ind, use_sorted_order)
             % Plots a reconstruction of the data using the stored linear
             % model. Options (defaults in parentheses):
             %   use_control (false): reconstruct using control, i.e.
@@ -1021,9 +1023,28 @@ classdef AdaptiveDmdc < AbstractDmd
             if ~exist('neuron_ind','var')
                 neuron_ind = 0;
             end
+            if ~exist('use_sorted_order','var')
+                use_sorted_order = false;
+            end
+            
+            if neuron_ind>0 
+                if ~use_sorted_order
+                    sorted_neuron_ind = find(self.u_sort_ind==neuron_ind);
+                else
+                    sorted_neuron_ind = neuron_ind;
+                    neuron_ind = self.u_sort_ind(sorted_neuron_ind);
+                end
+                if isempty(sorted_neuron_ind)
+                    error('Attempted to plot a neuron outside of the dataset (might be in the controller')
+                end
+            else
+                sorted_neuron_ind = 0;
+            end
             
             if use_control
                 if ~include_control_signal
+                    assert(sorted_neuron_ind<self.x_len,...
+                        'If you really meant to plot a controller neuron, set include_control_signal=true')
                     full_dat = self.dat(1:self.x_len,:);
                     title_str = 'Reconstructed data (with control; signal not shown)';
                 else
@@ -1040,21 +1061,21 @@ classdef AdaptiveDmdc < AbstractDmd
                 title_str = 'Reconstructed data (no control)';
             end
             if to_compare_raw
-                if neuron_ind < 1
+                if sorted_neuron_ind < 1
                     fig = plot_2imagesc_colorbar(full_dat, real(dat_approx),...
                         '2 1', 'Original data', title_str);
                 else
                     title_str = [title_str ...
                         sprintf('; neuron %d (name=%s)',...
-                        neuron_ind, self.get_names(neuron_ind))];
+                        sorted_neuron_ind, self.get_names(neuron_ind))];
                     fig = figure('DefaultAxesFontSize',12);
                     hold on
-                    plot(full_dat(neuron_ind,:), 'LineWidth', 2)
-                    plot(real(dat_approx(neuron_ind,:)), 'LineWidth', 4)
+                    plot(full_dat(sorted_neuron_ind,:), 'LineWidth', 2)
+                    plot(real(dat_approx(sorted_neuron_ind,:)), 'LineWidth', 4)
                     legend({'Original data','Reconstructed trajectory'})
                     ylabel('Amplitude')
                     xlabel('Time')
-                    if neuron_ind < self.x_len+1
+                    if sorted_neuron_ind < self.x_len+1
                         title(title_str)
                     else
                         title('This neuron taken as is; no reconstruction')
@@ -1062,14 +1083,14 @@ classdef AdaptiveDmdc < AbstractDmd
                 end
             else
                 fig = figure('DefaultAxesFontSize',12);
-                if neuron_ind < 1
+                if sorted_neuron_ind < 1
                     imagesc(dat_approx);
                     colorbar
                 else
                     title_str = [title_str ...
                         sprintf('; neuron %d (name=%s)',...
-                        neuron_ind, self.get_names(neuron_ind))];
-                    plot(dat_approx(neuron_ind,:))
+                        sorted_neuron_ind, self.get_names(sorted_neuron_ind))];
+                    plot(dat_approx(sorted_neuron_ind,:))
                     ylabel('Amplitude')
                     xlabel('Time')
                 end
