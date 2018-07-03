@@ -103,8 +103,84 @@ classdef WindowDmd < handle & AbstractDmd
             
         end
         
+        function cluster_library(self, num_modes, k, cluster_mode)
+            %Uses kmeans clustering on the library of 'interesting' modes
+            
+            warning('Clusters are not yet quantitatively consistent; use for preliminary work only')
+            
+            if ~exist('cluster_mode','var')
+                cluster_mode = 'kmeans';
+            end
+            if isempty(self.dat_V)
+                [U, S, V] = svd(self.dat_library);
+                self.dat_V = V;
+                self.dat_U = U;
+                self.dat_S = S;
+            else
+                V = self.dat_V;
+            end
+            if isnumeric(num_modes)
+                V = real(V(:,1:num_modes));
+            else
+                V = real(V);
+            end
+            
+            if ~exist('k','var') || isempty(k)
+                rng('default');  % For reproducibility
+                eva = evalclusters(...
+                    V,cluster_mode,'CalinskiHarabasz','KList',1:6);
+                k = eva.OptimalK;
+                if self.verbose
+                    fprintf('Clustering using the optimal value k=%d\n',k);
+                end
+            elseif self.verbose
+                fprintf('Clustering with k=%d using %s\n',...
+                    k, cluster_mode);
+            end
+            
+            switch cluster_mode
+                case 'kmeans'
+                    opts = statset('MaxIter',1000);
+                    [self.dat_idx, self.dat_centroids] = ...
+                        kmeans(V, k, 'Options', opts);
+                case 'gmm'
+                    gmmobj = fitgmdist(V, k);
+                    idx = cluster(gmmobj, V);
+                    
+                    self.dat_centroids = zeros(k,num_modes);
+                    for j=1:k
+                        thisCluster = V(idx == j,:); % |1| for cluster 1 membership
+                        self.dat_centroids(j,:) = mean(thisCluster,1);
+                    end
+                    self.dat_idx = idx;
+                    
+                otherwise
+                    error('Unrecognized clustering algorithm')
+            end
+            
+            self.num_clusters = k;
+        end
+        
+        function preprocess(self, full_preprocess)
+            % Uses the abstract class to handle most of the preprocessing
+            if full_preprocess
+                preprocess@AbstractDmd(self);
+            end
+            
+            self.set_default_windows();
+            self.set_window_indices();
+            self.set_window_normalization();
+        end
+        
+    end
+    
+    methods % Plotting
+        
         function plot_all_power_spectra(self, use_coeff, use_real_omega)
-            %Plots the power spectra of ALL the windows
+            % Plots the power spectra of ALL the windows
+            % Input:
+            %   use_coeff (false) - Uses the sign of the real part to plot
+            %   use_real_omega (false) - Uses only the real part of omega
             if ~exist('use_coeff','var')
                 use_coeff = false;
             end
@@ -123,13 +199,18 @@ classdef WindowDmd < handle & AbstractDmd
                     continue;
                 end
             end
+            title('Power spectrum for all windows')
         end
         
-        function plot_power_and_data(self,...
-                index, new_fig, use_coeff_sign, use_real_omega)
-            %Plots the power spectra of a single windows
+        function fig = plot_power_and_data(self,...
+                index, fig, use_coeff_sign, use_real_omega, ...
+                subplot_func)
+            %Plots the power spectra of a single window, with gui
             if ~exist('index','var')
                 index = 1;
+            end
+            if ~exist('fig','var') || isempty(fig)
+                fig = figure;
             end
             if ~exist('use_coeff_sign','var')
                 use_coeff_sign = false;
@@ -137,21 +218,19 @@ classdef WindowDmd < handle & AbstractDmd
             if ~exist('use_real_omega','var')
                 use_real_omega = false;
             end
-            if ~exist('new_fig','var')
-                new_fig = true;
+            if ~exist('subplot_func','var')
+                subplot_func = @plot_power_spectrum;
             end
             
-            if new_fig
-                figure
-            end
             subplot(2,1,1)
-            self.plot_window(index, use_coeff_sign, use_real_omega);
+            self.plot_window(index, use_coeff_sign, use_real_omega, ...
+                subplot_func);
             
             subplot(2,1,2)
             key = self.vec2key(index);
             dmdobj = self.PlotterDmd_all(key);
             if isempty(self.dat_idx)
-                dmdobj.plot_power_spectrum(use_coeff_sign, use_real_omega);
+                subplot_func(dmdobj, use_coeff_sign, use_real_omega);
             else
                 categories = zeros(size(dmdobj.coeff));
                 %Get 'interesting' modes for this window
@@ -174,7 +253,16 @@ classdef WindowDmd < handle & AbstractDmd
         end
         
         function plot_window(self, index,...
-                use_coeff_sign, use_real_omega)
+                use_coeff_sign, use_real_omega, subplot_func)
+            if ~exist('use_coeff_sign','var')
+                use_coeff_sign = false;
+            end
+            if ~exist('use_real_omega','var')
+                use_real_omega = false;
+            end
+            if ~exist('subplot_func','var')
+                subplot_func = @plot_power_spectrum;
+            end
             
             assert( index>0 && index<=self.num_clusters,...
                 'Must be valid window index')
@@ -191,7 +279,7 @@ classdef WindowDmd < handle & AbstractDmd
             bar_x = linspace(1,self.sz(2),self.num_clusters);
             plot(bar_x, ones(size(bar_x)),'ok','ButtonDownFcn',...
                 @(src,evt) self.plot_window_callback(...
-                src, evt, use_coeff_sign, use_real_omega),...
+                src, evt, use_coeff_sign, use_real_omega, subplot_func),...
                 'LineWidth',2)
             ylabel('Neuron number')
             colorbar;
@@ -294,7 +382,7 @@ classdef WindowDmd < handle & AbstractDmd
                                 % If use_coeff=false, then we come here and get
                                 % 1 for each mode, if normalized
                                 theseCoeff = sum(abs(...
-                                    dmdobj.Phi_sort(:,thisWindInd) ).^2, 1);
+                                    dmdobj.phi_sort(:,thisWindInd) ).^2, 1);
                             end
                         else
                             %Just count the number of modes
@@ -315,9 +403,9 @@ classdef WindowDmd < handle & AbstractDmd
                             if isempty(titleStr)
                                 titleStr = 'Power in each cluster (using decay)';
                             end
-                            theseOmega = dmdobj.Omega_sort(thisWindInd);
+                            theseOmega = dmdobj.omega_sort(thisWindInd);
                             tspan = thisInd'*self.dt;
-                            if self.t0EachBin
+                            if self.t0_each_bin
                                 tspan = tspan - tspan(1);
                             end
                             thisPowerMat = real(sum(...
@@ -363,7 +451,7 @@ classdef WindowDmd < handle & AbstractDmd
                 tstart = 1;
             end
             
-            if ~self.augmentData
+            if ~self.augment_data
                 mydat = real(self.dat(:,tstart:end));
             else
                 mydat = real(self.dat(1:self.original_sz(1),tstart:end));
@@ -442,75 +530,6 @@ classdef WindowDmd < handle & AbstractDmd
             ylabel('Amplitude')
         end
         
-        function cluster_library(self, num_modes, k, cluster_mode)
-            %Uses kmeans clustering on the library of 'interesting' modes
-            
-            warning('Clusters are not yet quantitatively consistent; use for preliminary work only')
-            
-            if ~exist('cluster_mode','var')
-                cluster_mode = 'kmeans';
-            end
-            if isempty(self.dat_V)
-                [U, S, V] = svd(self.dat_library);
-                self.dat_V = V;
-                self.dat_U = U;
-                self.dat_S = S;
-            else
-                V = self.dat_V;
-            end
-            if isnumeric(num_modes)
-                V = real(V(:,1:num_modes));
-            else
-                V = real(V);
-            end
-            
-            if ~exist('k','var') || isempty(k)
-                rng('default');  % For reproducibility
-                eva = evalclusters(...
-                    V,cluster_mode,'CalinskiHarabasz','KList',1:6);
-                k = eva.OptimalK;
-                if self.verbose
-                    fprintf('Clustering using the optimal value k=%d\n',k);
-                end
-            elseif self.verbose
-                fprintf('Clustering with k=%d using %s\n',...
-                    k, cluster_mode);
-            end
-            
-            switch cluster_mode
-                case 'kmeans'
-                    opts = statset('MaxIter',1000);
-                    [self.dat_idx, self.dat_centroids] = ...
-                        kmeans(V, k, 'Options', opts);
-                case 'gmm'
-                    gmmobj = fitgmdist(V, k);
-                    idx = cluster(gmmobj, V);
-                    
-                    self.dat_centroids = zeros(k,num_modes);
-                    for j=1:k
-                        thisCluster = V(idx == j,:); % |1| for cluster 1 membership
-                        self.dat_centroids(j,:) = mean(thisCluster,1);
-                    end
-                    self.dat_idx = idx;
-                    
-                otherwise
-                    error('Unrecognized clustering algorithm')
-            end
-            
-            self.num_clusters = k;
-        end
-        
-        function preprocess(self, full_preprocess)
-            % Uses the abstract class to handle most of the preprocessing
-            if full_preprocess
-                preprocess@AbstractDmd(self);
-            end
-            
-            self.set_default_windows();
-            self.set_window_indices();
-            self.set_window_normalization();
-        end
-        
     end
     
     methods (Access=private)
@@ -562,7 +581,7 @@ classdef WindowDmd < handle & AbstractDmd
             vec = index; %Initial layer is 1; only a single time bin
             key = self.vec2key(vec);
             this_dat = self.dat(:,dat_indices);
-            this_settings = self.plotterSet;
+            this_settings = self.plotter_set;
             this_settings.tspan = dat_indices*self.dt;
             
             self.PlotterDmd_all(key) = ...
@@ -580,15 +599,15 @@ classdef WindowDmd < handle & AbstractDmd
             %Want to do an expectation value, not just the basic energy
             tspan = (1:size(thisDat.Phi,2)) * self.dt;
             thisEnergy = trapz(abs(...
-                thisDat.coeff_sort .* exp(thisDat.Omega_sort.*tspan)).^2);
-            thisFreq = thisDat.Omega_sort;
+                thisDat.coeff_sort .* exp(thisDat.omega_sort.*tspan)).^2);
+            thisFreq = thisDat.omega_sort;
             %             thisMean = mean(thisEnergy);
             thisMedian = median(thisEnergy);
             thisStd = std(thisEnergy);
             
             indices = self.sort_func(...
                 thisEnergy, thisFreq, thisMedian, thisStd);
-            thisLib = thisDat.Phi_sort(:,indices);
+            thisLib = thisDat.phi_sort(:,indices);
             if self.lib_use_coeff_sign
                 %Include the coefficient sign to increase comparibility
                 thisSigns = repmat(sign(real(thisDat.coeff_sort))',...
@@ -640,7 +659,7 @@ classdef WindowDmd < handle & AbstractDmd
                 thisInd = self.window_ind(:,jW);
                 
                 tspan = thisInd*self.dt;
-                if self.t0EachBin
+                if self.t0_each_bin
                     tspan = tspan - tspan(1);
                 end
                 
@@ -678,6 +697,9 @@ classdef WindowDmd < handle & AbstractDmd
             %Gets the modes corresponding to a single window and cluster
             %identity
             %   Note: cluster_num=0 means all non-identified clusters
+            if isempty(self.dat_idx)
+                error('No clustering data')
+            end
             
             if cluster_num ~= 0
                 %Get indices in the library then in the window
@@ -716,13 +738,17 @@ classdef WindowDmd < handle & AbstractDmd
         end
         
         function plot_window_callback(self,...
-                ~, event_data, use_coeff_sign, use_real_omega)
+                ~, event_data, use_coeff_sign, use_real_omega, subplot_func)
             %Plots a new power spectrum
+            if ~exist('subplot_func','var')
+                subplot_func = @plot_power_and_data;
+            end
             x = event_data.IntersectionPoint(1);
             bar_x = linspace(1,self.sz(2),self.num_clusters);
             index = find( abs(x-bar_x)<1e-2 );
             delete(subplot(2,1,2))
-            self.plot_power_and_data(index, 0, use_coeff_sign, use_real_omega); %#ok<FNDSB>
+            self.plot_power_and_data(index, false,...
+                use_coeff_sign, use_real_omega, subplot_func); %#ok<FNDSB>
         end
         
     end
