@@ -338,6 +338,35 @@ classdef PlotterDmd < handle & SettingsImportableFromStruct
             ylabel('log(Power of mode)')
             xlabel('Frequency (Hz)')
         end
+        
+        function plot_eigenvalues(self, ~, ~, categories)
+            %Plots the dmd eigenvalues
+            
+            freq = self.omega_sort;
+            
+            %figure;
+            if ~exist('categories','var')
+                plot(freq, 'o', 'LineWidth', 2)
+            else
+                hold on
+                %Set the proper color by hand
+                plot_colors = lines(max(categories));
+                for jC = unique(categories)'
+                    ind = find(categories==jC);
+                    if jC==0
+                        plot(freq(ind), power(ind), 'ok')
+                    else
+                        plot(freq(ind), power(ind), 'o', 'LineWidth', 2)
+                        f = gca();
+                        f.Children(1).Color = plot_colors(jC,:);
+                    end
+                end
+                hold off
+            end
+            ylabel('Eigenvalue (imag)')
+            xlabel(sprintf('Eigenvalue (real); max=%.2f',...
+                max(real(freq))))
+        end
     end
     
     methods (Access = private)
