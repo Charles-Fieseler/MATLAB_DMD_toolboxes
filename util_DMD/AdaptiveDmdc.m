@@ -1192,7 +1192,7 @@ classdef AdaptiveDmdc < AbstractDmd
                 xlabel('Time')
                 ylabel('Error')
             else
-                self.get_names(this_neuron);
+                self.plot_reconstruction(true, true, true, this_neuron);
             end
         end
         
