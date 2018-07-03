@@ -1067,7 +1067,7 @@ classdef AdaptiveDmdc < AbstractDmd
                 else
                     title_str = [title_str ...
                         sprintf('; neuron %d (name=%s)',...
-                        sorted_neuron_ind, self.get_names(neuron_ind))];
+                        neuron_ind, self.get_names(neuron_ind))];
                     fig = figure('DefaultAxesFontSize',12);
                     hold on
                     plot(full_dat(sorted_neuron_ind,:), 'LineWidth', 2)
