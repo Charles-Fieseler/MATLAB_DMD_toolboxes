@@ -67,6 +67,9 @@ classdef WindowDmd < handle & AbstractDmd
 %         num_clusters
         window_ind
         window_normalization
+        
+        similarity_objects
+        similarity_vec
     end
     
     methods
@@ -167,9 +170,105 @@ classdef WindowDmd < handle & AbstractDmd
                 preprocess@AbstractDmd(self);
             end
             
+            self.tspan = 0:self.dt:(self.dt*size(self.dat,2)-self.dt);
+            self.similarity_objects = containers.Map();
+            
             self.set_default_windows();
             self.set_window_indices();
             self.set_window_normalization();
+        end
+        
+        function all_errors = calc_reconstruction_error(self,...
+                to_pad_front, indices)
+            % Calculates reconstruction error for each window, with padding
+            % to make it the same length as the data (default is to pad the
+            % front of the vector)
+            % Can also use only a subset of rows (indices)
+            if ~exist('to_pad_front','var')
+                to_pad_front = true;
+            end
+            if ~exist('indices','var')
+                indices = []; % Use default of external method
+            end
+            keys = self.PlotterDmd_all.keys;
+            num_keys = length(keys);
+            sz = length(self.tspan);
+            all_errors = zeros(sz,1);
+            
+            if to_pad_front
+                t_start = sz - num_keys+1;
+                t_end = sz;
+            else
+                t_start = 1;
+                t_end = num_keys;
+            end
+            
+            for j=t_start:t_end
+                k = keys{j-t_start+1};
+                all_errors(j) = ...
+                    self.PlotterDmd_all(k).calc_reconstruction_error(indices);
+            end
+        end
+        
+        function [func_array, tspans] = calc_DMD_func_array(self, ...
+                window1, window2, t_compare)
+            % Calculates the array of reconstruction functions that
+            % correspond to a given pair of windows
+            if isnumeric(window1)
+                key1 = self.vec2key(window1);
+                key2 = self.vec2key(window2);
+            else
+                key1 = window1;
+                key2 = window2;
+            end
+            
+            % Get the 2 window dmd objects
+            obj1 = self.PlotterDmd_all(key1);
+            obj2 = self.PlotterDmd_all(key2);
+            
+            % Create function
+            func_array = [...
+                {@(x0) ...
+                obj1.get_reconstructed_endpoint(...
+                [], t_compare, x0) }, ...
+                {@(x0) ...
+                obj2.get_reconstructed_endpoint(...
+                [], t_compare, x0) }]; 
+            tspans = [obj1.tspan obj2.tspan];
+            
+        end
+        
+        function initialize_all_similarity_objects(self)
+            % Initializes external object for calculating similarities
+            % between DMD data reconstructions
+            t_compare = self.window_size/2.0;
+            
+            for j = 1:(self.num_clusters-1)
+                
+                % Get func for this window and next one
+                compare_func = self.calc_DMD_func_array(...
+                    j, j+1, t_compare);
+                compare_x0_mean = [];
+%                 settings = struct('iterations',10,...
+%                     'noise',mean(compare_x0_mean)/10.0);
+                settings = struct('iterations',10,...
+                    'sz',[size(self.dat,1),1]);
+                self.similarity_objects(self.vec2key([j, j+1])) = ...
+                    DynamicSimilarity(...
+                    compare_func, compare_x0_mean, settings);
+            end
+        end
+        
+        function calc_all_pairwise_similarities(self)
+            % Calculates pairwise similarity, after objects have been
+            % initialized
+            keys = self.similarity_objects.keys;
+            sz = length(keys);
+            self.similarity_vec = zeros(sz,1);
+            for j=1:sz
+%                 self.similarity_vec(j) = ...
+%                     self.similarity_objects(keys{j}).
+            end
         end
         
     end
@@ -250,6 +349,35 @@ classdef WindowDmd < handle & AbstractDmd
                     use_coeff_sign, use_real_omega, categories);
             end
             title(sprintf('Power spectrum for window %d',index))
+        end
+        
+        function fig = plot_error_and_data(self, to_plot_log, indices, fig)
+            % Plots data and the reconstruction error of the windows
+            %   Default plots the log of the error
+            if ~exist('to_plot_log','var')
+                to_plot_log = true;
+            end
+            if ~exist('indices','var')
+                indices = [];
+            end
+            if ~exist('fig','var') || isempty(fig)
+                fig = figure;
+            end
+            
+            subplot(2,1,1)
+            self.plot_window(1);
+            
+            subplot(2,1,2)
+            all_errors = self.calc_reconstruction_error(false, indices);
+            if to_plot_log
+                all_errors = log(all_errors);
+                y_str = 'log(error)';
+            else
+                y_str = 'error';
+            end
+            plot(self.tspan, all_errors, 'LineWidth',2)
+            title('Reconstruction error')
+            ylabel(y_str);
         end
         
         function plot_window(self, index,...

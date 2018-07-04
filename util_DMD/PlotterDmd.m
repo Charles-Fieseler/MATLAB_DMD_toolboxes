@@ -126,6 +126,9 @@ classdef PlotterDmd < handle & SettingsImportableFromStruct
             if ~exist('ind','var')
                 ind = 0;
             end
+            if ~exist('tspan','var')
+                tspan = self.dt * (1:size(self.raw,2));
+            end
             if isscalar(ind)
                 if ind>max_ind
                     ind = 1:min(ind,max_ind);
@@ -142,9 +145,6 @@ classdef PlotterDmd < handle & SettingsImportableFromStruct
             
             Omega_approx = self.omega_sort(ind);
             coeff_approx = self.coeff_sort(ind);
-            if ~exist('tspan','var')
-                tspan = self.dt * (1:size(self.raw,2));
-            end
             
             for jT = length(tspan):-1:1
                 Xmodes(:,jT) = coeff_approx.*exp(Omega_approx*tspan(jT));
@@ -155,6 +155,15 @@ classdef PlotterDmd < handle & SettingsImportableFromStruct
                     Xapprox(jM,:) = Xapprox(jM,:) + mean(self.raw(jM,:));
                 end
             end
+        end
+        
+        function error = calc_reconstruction_error(self, indices)
+            % Uses L2 norm to get full error
+            if ~exist('indices','var') || isempty(indices)
+                indices = 1:size(self.dat,1);
+            end
+            dat_approx = self.get_reconstruction();
+            error = norm(self.dat(indices,:) - dat_approx(indices,:));
         end
         
         function Xapprox = get_reconstructed_endpoint(self,...
