@@ -398,6 +398,8 @@ classdef PlotterDmd < handle & SettingsImportableFromStruct
             
             if self.model_order>0
                 self.model_order = min([self.model_order,sz_raw]);
+            elseif self.model_order==-1
+                self.model_order = optimal_truncation(self.dat);
             else
                 self.model_order = min(sz_raw);
             end
