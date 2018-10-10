@@ -2,15 +2,21 @@ function [ A_sparse, all_errors ] = sparse_dmd( X, prams)
 % Do sparse DMD
 
 %% Set defaults
+if ~exist('prams','var')
+    prams = struct();
+end
 defaults = struct(...
-    'min_tol', 1e-8,...
-    'error_norm', @(A, x, b) norm(A*x-b),...
+    'min_tol', {{{1e-8}}},...
+    'tol2column_cell',{{{1:size(X,2)}}},...
+    'error_func', @(A, x, b, rows) norm(A*x-b(rows,:)),...
     'max_error_mult', 2,...
     'column_mode', false,...
     'rows_to_predict', size(X,1),...
     'sparsity_goal', 0.5,...
-    'max_iter', 10,...
-    'verbose', true);
+    'max_iter', 50,...
+    'verbose', true,...
+    'cull_n_lowest_values', 1,...
+    'sparsity_mode', 'threshold');
 fnames = fieldnames(prams);
 for key = fieldnames(defaults).'
     k = key{1};
@@ -34,21 +40,34 @@ end
 % Initialize with MATLAB backslash
 A_sparse = X2 / X1;
 A_sparse_old = A_sparse;
+% Set all rows we don't care about to 0
+if ~prams.column_mode
+    assert(isequal(prams.rows_to_predict, 1:size(A_sparse,1)),...
+        'If only predicted a subset of rows, set column_mode=true')
+end
+A_sparse = A_sparse(1:prams.rows_to_predict,:);
 n = length(A_sparse); %#ok<NASGU>
 % Use cvx to set up a sequential thresholding loop
-total_num_elem = numel(A_sparse(1:prams.rows_to_predict,:));
+total_num_elem = numel(A_sparse);
 num_nnz = zeros(prams.max_iter,1);
-num_nnz(1) = nnz(A_sparse(1:prams.rows_to_predict,:));
+num_nnz(1) = nnz(A_sparse);
 all_errors = zeros(prams.max_iter,1);
-all_errors(1) = prams.error_func(A_sparse, X1, X2);
+all_errors(1) = prams.error_func(A_sparse, X1, X2, prams.rows_to_predict);
 error_max = all_errors(1)*prams.max_error_mult;
 did_it_abort_early = false;
+sparsity_pattern = zeros(size(A_sparse));
 for i=2:prams.max_iter
-    % Threshold to enforce sparsity
-    sparsity_pattern = abs(A_sparse)<prams.min_tol;
+    % Threshold to enforce sparsity; may have a different threshold for
+    % different columns
+    for i3 = 1:length(prams.tol2column_cell)
+        tmp = prams.tol2column_cell{i3}{:};
+        sparsity_pattern(:,tmp) = ...
+            abs(A_sparse(:,tmp)) < prams.min_tol{i3}{:};
+    end
+    sparsity_pattern = logical(sparsity_pattern);
     
     num_nnz(i) = nnz(A_sparse(1:prams.rows_to_predict,:));
-    all_errors(i) = prams.error_func(A_sparse, X1, X2);
+    all_errors(i) = prams.error_func(A_sparse, X1, X2, prams.rows_to_predict);
     if prams.verbose
         fprintf('Iteration %d:\n', i-1)
         fprintf('  %d nonzero-entries (goal: %d)\n',...
@@ -59,44 +78,69 @@ for i=2:prams.max_iter
     % Check convergence etc
     if i>2
         current_sparsity = num_nnz(i) / total_num_elem;
-        if all_errors(i) > error_max
-            % If we have already halved the threshold, abort early instead
-            % of bouncing around the threshold
-            A_sparse = A_sparse_old;
-            if length(find(diff(all_errors>error_max))) < 2
-                % Note: diff() because we want to continue if:
-                %   all_errors>error_max = [0 0 0 1 1 1]
+        if strcmp(prams.sparsity_mode, 'threshold')
+            if all_errors(i) > error_max
+                % If we have already halved the threshold, abort early instead
+                % of bouncing around the threshold
+                A_sparse = A_sparse_old;
+                if length(find(diff(all_errors>error_max))) < 2
+                    % Note: diff() because we want to continue if:
+                    %   all_errors>error_max = [0 0 0 1 1 1]
+                    tol_factor = abs(all_errors(i)-error_max) / ...
+                        (all_errors(i)+error_max);
+                    fprintf('  Error exceeded max; multiplying threshold by %.2f\n',...
+                        tol_factor)
+                    for i2 = 1:length(prams.min_tol)
+                        prams.min_tol{i2}{:} = ...
+                            prams.min_tol{i2}{:} * tol_factor;
+                    end
+                else
+                    disp('  Error exceeded maximum again; aborting')
+                    did_it_abort_early = true;
+                    break
+                end
+            elseif  current_sparsity < prams.sparsity_goal
+                fprintf('Achieved sparsity goal (%f percent)\n',current_sparsity)
+                break
+            elseif (num_nnz(i-1)-num_nnz(i)) < max([0.02*num_nnz(i), 5])
+                % Measure what would be needed to get another 50% to the
+                % sparseness goal and set that as the threshold
+                nnz_goal = round(total_num_elem*prams.sparsity_goal);
+                f = @(x) abs(length(A_sparse(A_sparse>x))-nnz_goal);
+                goal_tol = fminbnd(f, prams.min_tol{1}{:}, max(max(A_sparse)));
                 tol_factor = abs(all_errors(i)-error_max) / ...
                     (all_errors(i)+error_max);
-                fprintf('  Error exceeded max; multiplying threshold by %.2f\n',...
-                    tol_factor)
-                prams.min_tol = prams.min_tol * tol_factor;
+                % Move a percentage towards the ideal goal in relation to how
+                % much error we can increase
+                for i2 = 1:length(prams.min_tol)
+                    prams.min_tol{i2}{:} = ...
+                        prams.min_tol{i2}{:} + tol_factor*goal_tol;
+                end
+
+                fprintf('  Stall predicted; new tolerance is %.2f\n',...
+                    prams.min_tol{1}{:})
             else
-                disp('  Error exceeded maximum again; aborting')
-                did_it_abort_early = true;
+                A_sparse_old = A_sparse;
+            end
+            for i3 = 1:length(prams.tol2column_cell)
+                tmp = prams.tol2column_cell{i3}{:};
+                sparsity_pattern(:,tmp) = ...
+                    abs(A_sparse(:,tmp)) < prams.min_tol{i3}{:};
+            end
+            sparsity_pattern = logical(sparsity_pattern);
+        elseif strcmp(prams.sparsity_mode, 'cull')
+            if current_sparsity < prams.sparsity_goal
+                fprintf('Achieved sparsity goal (%f percent)\n',current_sparsity)
                 break
             end
-        elseif  current_sparsity < prams.sparsity_goal
-            fprintf('Achieved sparsity goal (%f percent)\n',current_sparsity)
-            break
-        elseif (num_nnz(i-1)-num_nnz(i)) < max([0.02*num_nnz(i), 5])
-            % Measure what would be needed to get another 50% to the
-            % sparseness goal and set that as the threshold
-            nnz_goal = round(total_num_elem*prams.sparsity_goal);
-            f = @(x) abs(length(A_sparse(A_sparse>x))-nnz_goal);
-            goal_tol = fminbnd(f, prams.min_tol, max(max(A_sparse)));
-            tol_factor = abs(all_errors(i)-error_max) / ...
-                (all_errors(i)+error_max);
-            % Move a percentaget towards the ideal goal in relation to how
-            % much error we can increase
-            prams.min_tol = prams.min_tol + tol_factor*goal_tol;
-            
-            fprintf('  Stall predicted; new tolerance is %.2f\n',...
-                prams.min_tol)
+            sz = size(A_sparse);
+            tmp = reshape(abs(A_sparse),[sz(1)*sz(2),1]);
+            sort_tmp = sort(tmp(tmp>0));
+            sparsity_pattern = abs(A_sparse) <= ...
+                sort_tmp(prams.cull_n_lowest_values);
         else
-            A_sparse_old = A_sparse;
+            error('Unrecognized sparsity mode')
         end
-        sparsity_pattern = abs(A_sparse)<prams.min_tol;
     else
         A_sparse(sparsity_pattern) = 0;
     end
