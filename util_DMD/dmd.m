@@ -71,13 +71,15 @@ subDat2 = dat(:,2:end);
 if useFBDMD
     %Calculate the backwards propagator as well
     %   switch the role of subDat1 and subDat2
-    error('This mode is extremely unstable')
+%     error('This mode is extremely unstable')
     [U2,S2,V2] = svd(subDat2,'econ');
 end
 
 %Throw away all but the top r modes
-if ~exist('r','var') || r==0
+if ~exist('r','var') || r==-1
     r = size(U,2);
+elseif r == 0
+    r = optimal_truncation(subDat1);
 end
 if exist('r_percent','var')
     if r_percent<1
@@ -108,8 +110,11 @@ if useFBDMD
     
     %Improved estimate for A
     %   Note: there are ambiguities for the matrix sqrt...
-    %romA = sqrtm(romA/romA2);
-    romA = (romA / romA2) ^ 0.5;
+    romA = sqrtm(romA/romA2);
+%     romA = (romA / romA2) ^ 0.5;
+%     [V, D] = eig(romA, 'vector');
+%     [~, D2] = eig(romA2, 'vector');
+%     romA = V*diag(sqrt(D./D2))/V;
 end
 
 %---------------------------------------------
