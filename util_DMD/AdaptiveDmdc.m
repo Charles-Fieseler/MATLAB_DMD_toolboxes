@@ -493,11 +493,11 @@ classdef AdaptiveDmdc < AbstractDmd
                     
                 case 'sparse'
                     % MUCH stronger sparsification on the control matrix
-                    p.min_tol = {{8e-3}, {5e-2}};
+%                     p.min_tol = {{8e-3}, {5e-2}};
                     p.tol2column_cell = {...
                         {1:x_length}, ...
                         {(x_length+1):(x_length+u_length)}};
-                    p.max_error_mult = 1.75;
+                    p.max_error_mult = 1.25;
                     p.column_mode = true;
                     p.rows_to_predict = self.x_len;
                     p.verbose = true;
@@ -505,10 +505,10 @@ classdef AdaptiveDmdc < AbstractDmd
                         self.update_and_reconstruction_error(A,'Inf');
                     p.sparsity_goal = self.sparsity_goal;
                     p.sparsity_mode = self.sparsity_mode;
-                    p.max_iter = 50;
+                    p.max_iter = 10;
                     
                     [ A_orig, ~ ] = ...
-                        sparse_dmd( X, p);
+                        sparse_dmd(X, p);
 
                     % Set points corresponding to u on the LHS to 0
                     % X2_sep(u_indices,:) = 0;
