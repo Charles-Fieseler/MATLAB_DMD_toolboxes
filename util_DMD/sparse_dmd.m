@@ -6,7 +6,7 @@ if ~exist('prams','var')
     prams = struct();
 end
 defaults = struct(...
-    'min_tol', {{{1e-8}}},...
+    'min_tol', {{{0}}},...
     'tol2column_cell',{{{1:size(X,2)}}},...
     'error_func', @(A, x, b, rows) norm(A*x-b(rows,:)),...
     'max_error_mult', 2,...
@@ -34,6 +34,13 @@ elseif iscell(X)
 else
     error('Unrecognized data format')
 end
+
+if prams.min_tol{1}{:} == 0
+    prams.min_tol = cell(length(prams.tol2column_cell),1);
+    for i = 1:length(prams.min_tol)
+        prams.min_tol{i} = {0};
+    end
+end
 %==========================================================================
 
 %% Set up the convex optimization problem and solve with cvx
@@ -49,6 +56,16 @@ A_sparse = A_sparse(1:prams.rows_to_predict,:);
 n = length(A_sparse); %#ok<NASGU>
 % Use cvx to set up a sequential thresholding loop
 total_num_elem = numel(A_sparse);
+for i = 1:length(prams.tol2column_cell)
+    if prams.min_tol{i}{:} == 0
+        tmp = prams.tol2column_cell{i}{:};
+        A_block = A_sparse(:,tmp);
+        ind = ceil(numel(A_block) * prams.sparsity_goal);
+        A_sort = sort(A_block(:));
+        % Set tolerance based on sparsity goal
+        prams.min_tol{i}{:} = A_sort(ind) + 1e-8;
+    end
+end
 num_nnz = zeros(prams.max_iter,1);
 num_nnz(1) = nnz(A_sparse);
 all_errors = zeros(prams.max_iter,1);
