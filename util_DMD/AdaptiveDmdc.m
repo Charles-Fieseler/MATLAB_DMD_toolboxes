@@ -15,31 +15,7 @@ classdef AdaptiveDmdc < AbstractDmd
     % Dependencies
     %   .m files, .mat files, and MATLAB products required:(updated on 10-Apr-2018)
     %             MATLAB (version 9.2)
-    %             Signal Processing Toolbox (version 7.4)
-    %             Curve Fitting Toolbox (version 3.5.5)
-    %             System Identification Toolbox (version 9.6)
-    %             Optimization Toolbox (version 7.6)
-    %             Simulink Control Design (version 4.5)
-    %             Statistics and Machine Learning Toolbox (version 11.1)
-    %             Computer Vision System Toolbox (version 7.3)
-    %             v2struct.m
-    %             settings_importable_from_struct.m
-    %             AbstractDmd.m
-    %             plotSVD.m
-    %             plot_2imagesc_colorbar.m
-    %             xgeqp3_m.mexw64
-    %             xormqr_m.mexw64
-    %             optdmd.m
-    %             varpro2.m
-    %             varpro2dexpfun.m
-    %             varpro2expfun.m
-    %             varpro_lsqlinopts.m
-    %             varpro_opts.m
-    %             adjustedVariance.m
-    %             computeTradeOffCurve.m
-    %             invPow.m
-    %             optimizeVariance.m
-    %             sparsePCA.m
+    %             
     %
     %   See also: OTHER_FUNCTION_NAME
     %
@@ -74,7 +50,9 @@ classdef AdaptiveDmdc < AbstractDmd
         dmd_mode
         dmd_offset
         what_to_do_dmd_explosion
+        oscillation_threshold
         sparsity_goal % if dmd_mode==sparse
+        initial_sparsity_pattern
         sparsity_mode
         to_print_error
         % Outlier calculation settings
@@ -86,9 +64,11 @@ classdef AdaptiveDmdc < AbstractDmd
         filter_window_size
         outlier_window_size
         % Augmentation settings
+        data_already_augmented
         to_augment_error_signals
         % Tolerance for sparsification
         sparse_tol
+        sparse_tol_factor
         
         % For memory management
         to_save_raw_data
@@ -201,7 +181,7 @@ classdef AdaptiveDmdc < AbstractDmd
             
             defaults = struct(...
                 'sort_mode', 'DMD_error_outliers',...
-                'to_plot_nothing', false,...
+                'to_plot_nothing', true,...
                 'to_plot_cutoff', true,...
                 'to_plot_data', true,...
                 'to_plot_A_matrix_svd', false,...
@@ -212,8 +192,10 @@ classdef AdaptiveDmdc < AbstractDmd
                 'dmd_mode', 'naive',...
                 'dmd_offset', 1,...
                 'what_to_do_dmd_explosion','project',...
+                'oscillation_threshold', 0,...
                 'external_A_orig', [],...
                 'sparsity_goal', 0.6,...
+                'initial_sparsity_pattern', logical([]),...
                 'sparsity_mode', 'threshold',...
                 'cutoff_multiplier', 1.0,...
                 'to_print_error', false, ...
@@ -222,10 +204,12 @@ classdef AdaptiveDmdc < AbstractDmd
                 'to_subtract_mean', false,...
                 'to_normalize_envelope', false,...
                 'to_augment_error_signals', false,...
+                'data_already_augmented', 0, ...
                 'filter_window_size', 10,...
                 'outlier_window_size', 2000,...
                 'id_struct', struct(),...
                 'sparse_tol', 0,...
+                'sparse_tol_factor', 1,...
                 'to_save_raw_data', true,...
                 'hold_out_fraction', 0,...
                 'cross_val_window_size_percent', 1);
@@ -479,7 +463,7 @@ classdef AdaptiveDmdc < AbstractDmd
             X1_original = X(:,1:end-self.dmd_offset);
             X2_original = X(:,(self.dmd_offset+1):end);
             
-            switch self.dmd_mode
+            switch lower(self.dmd_mode)
                 case 'naive'
                     A_orig = X2_original / X1_original;
 
@@ -492,50 +476,109 @@ classdef AdaptiveDmdc < AbstractDmd
                     A_sep = X2_sep / X1_original;
                     
                 case 'sparse'
+                    error("Option 'sparse' is deprecated; use 'sparse_fast'")
                     % MUCH stronger sparsification on the control matrix
 %                     p.min_tol = {{8e-3}, {5e-2}};
-                    p.tol2column_cell = {...
-                        {1:x_length}, ...
-                        {(x_length+1):(x_length+u_length)}};
-                    p.max_error_mult = 1.25;
-                    p.column_mode = true;
-                    p.rows_to_predict = self.x_len;
-                    p.verbose = true;
-                    p.error_func = @(A, ~, ~, ~) ...
-                        self.update_and_reconstruction_error(A,'Inf');
-                    p.sparsity_goal = self.sparsity_goal;
-                    p.sparsity_mode = self.sparsity_mode;
-                    p.max_iter = 10;
+%                     p.tol2column_cell = {...
+%                         {1:x_length}, ...
+%                         {(x_length+1):(x_length+u_length)}};
+%                     p.max_error_mult = 1.25;
+%                     p.column_mode = true;
+%                     p.rows_to_predict = 1:self.x_len;
+%                     p.verbose = true;
+%                     p.error_func = @(A, ~, ~, ~) ...
+%                         self.update_and_reconstruction_error(A,'Inf');
+%                     p.sparsity_goal = self.sparsity_goal;
+%                     p.initial_sparsity_pattern = ...
+%                         self.initial_sparsity_pattern;
+%                     p.sparsity_mode = self.sparsity_mode;
+%                     p.max_iter = 10;
+%                     if self.truncation_rank == 0
+%                         % Do not want to SVD reconstruct the control signal
+%                         Upsilon = X((x_length+1):end,:);
+%                         X_no_ctr = X(1:x_length,:);
+%                         [~, ~, X_no_ctr] = optimal_truncation(X_no_ctr);
+%                         X = [X_no_ctr; Upsilon];
+%                     end
+%                     
+%                     [ A_orig, ~ ] = ...
+%                         sparse_dmd(X, p);
+% 
+%                     % Set points corresponding to u on the LHS to 0
+%                     % X2_sep(u_indices,:) = 0;
+%                     % Easier with sorted data
+%                     sz = size(X2_original);
+%                     X2_sep = [X2_original(1:x_length,:);
+%                         zeros(u_length,sz(2)) ];
+% %                     [ A_sep, ~ ] = ...
+% %                         sparse_dmd( {X1_original, X2_sep},...
+% %                         min_tol, max_error_mult, column_mode );
+%                     A_sep = [A_orig(1:x_length,:);...
+%                         zeros(self.u_len, size(A_orig,2))];
                     
-                    [ A_orig, ~ ] = ...
-                        sparse_dmd(X, p);
-
-                    % Set points corresponding to u on the LHS to 0
-                    % X2_sep(u_indices,:) = 0;
-                    % Easier with sorted data
-                    sz = size(X2_original);
-                    X2_sep = [X2_original(1:x_length,:);
-                        zeros(u_length,sz(2)) ];
-%                     [ A_sep, ~ ] = ...
-%                         sparse_dmd( {X1_original, X2_sep},...
-%                         min_tol, max_error_mult, column_mode );
+                case 'sparse_fast'
+                    Upsilon = X((x_length+1):end,1:end-1);
+                    X_no_ctr = X(1:x_length,:);
+                    dat = {[X_no_ctr(:,1:end-1);Upsilon], ...
+                        X_no_ctr(:,2:end)};
+                    
+                    A = dat{2}/dat{1};
+                    if self.data_already_augmented > 0
+                        x = x_length/self.data_already_augmented;
+                        partial_A = A(1:x,1:x);
+                    else
+                        partial_A = A(1:x_length,1:x_length);
+                    end
+                    settings = struct( 'threshold', ...
+                        median(median(abs(partial_A))) *...
+                        self.sparse_tol_factor );
+                    [A_orig] = sparse_dmd_fast(dat, settings);
                     A_sep = [A_orig(1:x_length,:);...
                         zeros(self.u_len, size(A_orig,2))];
                     
                 case 'optdmd' 
+                    error('Not implemented')
                     % Note: default rank is high, so it takes a while
-                    t = (1:size(X,2))';
+%                     t = (1:size(X,2))';
+%                     if self.truncation_rank == 0
+%                         r = optimal_truncation(X2_original(1:x_length,:));
+%                     else
+%                         r = self.truncation_rank;
+%                     end
+%                     opt = varpro_opts('maxiter', 500);
+%                     [~,~,~,~,~,A_orig] = optdmd(X,t,r, 1, opt);
+%                     A_sep = [A_orig(1:x_length,:);...
+%                         zeros(u_length, size(A_orig,2))];
+                    
+                case 'func_dmdc'
+                    % Uses Zhe's code
+                    %   Note: have to decide on a truncation rank for both
+                    %   the dynamics and the control signal
+                    X1 = X1_original(1:x_length,:);
+                    X2 = X2_original(1:x_length,:);
+                    Upsilon = X1_original((x_length+1):end,:);
                     if self.truncation_rank == 0
-                        r = optimal_truncation(X2_original(1:x_length,:));
+                        r = optimal_truncation(X2);
+                        self.truncation_rank = r;
+                        rtilde = self.truncation_rank_control;
+                    elseif self.truncation_rank == -1
+                        r = x_length;
+                        rtilde = u_length + x_length;
                     else
                         r = self.truncation_rank;
+                        rtilde = self.truncation_rank_control;
                     end
-                    opt = varpro_opts('maxiter', 500);
-                    [~,~,~,~,~,A_orig] = optdmd(X,t,r, 1, opt);
-                    A_sep = [A_orig(1:x_length,:);...
-                        zeros(u_length, size(A_orig,2))];
+                    [~, ~, Bhat, ~, Uhat, ~, ~, ~, ~, ~, Atilde] = ...
+                        func_DMDc(X1, X2, Upsilon, r, rtilde);
                     
-                case 'func_DMDc'
+                    U = Uhat(:,1:r);
+                    A = U*Atilde*U';
+                    % Concatenating them is the format this object expects
+                    A_orig = [A Bhat];
+                    A_orig = [A_orig; zeros(u_length, size(A_orig,2))];
+                    A_sep = A_orig;
+                    
+                case 'truncated_dmdc'
                     % Uses Zhe's code
                     %   Note: have to decide on a truncation rank for both
                     %   the dynamics and the control signal
@@ -553,15 +596,46 @@ classdef AdaptiveDmdc < AbstractDmd
                         r = self.truncation_rank;
                         rtilde = self.truncation_rank_control;
                     end
+                    U_truncate = svd_truncate(Upsilon, rtilde);
+                    X1 = [svd_truncate(X1, r); U_truncate];
+                    X2 = [svd_truncate(X2, r); U_truncate];
+                    
+                    A_orig = X2/X1;
+                    A_sep = [A_orig(1:x_length,:); zeros(u_length, size(A_orig,2))];
+                    
+                case 'no_dynamics'
+                    % Uses Zhe's code
+                    %   Note: have to decide on a truncation rank for both
+                    %   the dynamics and the control signal
+                    X2 = X2_original(1:x_length,:);
+                    X1 = zeros(size(X2));
+                    Upsilon = X1_original((x_length+1):end,:);
+                    if self.truncation_rank == 0
+                        r = optimal_truncation(X2);
+                        self.truncation_rank = r;
+                        rtilde = self.truncation_rank_control;
+                    elseif self.truncation_rank == -1
+                        r = x_length;
+                        rtilde = u_length;
+                    else
+                        r = self.truncation_rank;
+                        rtilde = self.truncation_rank_control;
+                    end
                     [~, ~, Bhat, ~, Uhat, ~, ~, ~, ~, ~, Atilde] = ...
                         func_DMDc(X1, X2, Upsilon, r, rtilde);
                     
-                    U = Uhat(:,1:r);
-                    A = U*Atilde*U';
+                    A = zeros(size(Uhat));
                     % Concatenating them is the format this object expects
                     A_orig = [A Bhat];
                     A_orig = [A_orig; zeros(u_length, size(A_orig,2))];
                     A_sep = A_orig;
+                    
+                case 'no_dynamics_sparse'
+                    warning('Assuming the initial sparsity enforces no dynamics')
+                    self.dmd_mode = 'sparse';
+                    self.calc_dmd_and_errors();
+                    self.dmd_mode = 'no_dynamics_sparse';
+                    return
                     
                 case 'tdmd'
                     % Use Total DMD (aka total least squares dmd), sending
@@ -601,7 +675,18 @@ classdef AdaptiveDmdc < AbstractDmd
             % converge)
             A = A_orig(1:x_length,1:x_length);
             [V, D] = eig(A, 'vector'); 
+            if self.oscillation_threshold > 0
+                % Extremely slow oscillations are probably numerical
+                % instabilities
+                for i = 1:length(D)
+                    if ~isreal(D(i)) && ...
+                            abs(angle(D(i))) < self.oscillation_threshold
+                        D(i) = abs(D(i));
+                    end
+                end
+            end
             if max(abs(D)) > 1.0
+                % i.e. there are unstable eigenvalues!
                 switch self.what_to_do_dmd_explosion
                     case 'ignore'
                         warning('Ignoring eigenvalue>1; not recommended')
@@ -611,27 +696,24 @@ classdef AdaptiveDmdc < AbstractDmd
                         
                     case 'project'
                         warning('Projecting an unstable eigenvalue onto unit circle')
-%                         real_D = min(real(D),ones(size(D))-1e-4);
-%                         D = real_D + 1i*imag(D);
                         D = D./(max(abs(D)+1e-4,ones(size(D))));
-                        A = V*diag(D)/V;
-                        % Don't change the control matrix, B
-                        A_orig(1:x_length,1:x_length) = A;
-                        A_sep(1:x_length,1:x_length) = A;
                         
                     case 'shrink'
                         warning('Shrinking an unstable eigenvalue to 0')
                         tmp = abs(D);
                         D(tmp>1) = 0;
-                        A = V*diag(D)/V;
-                        % Don't change the control matrix, B
-                        A_orig(1:x_length,1:x_length) = A;
-                        A_sep(1:x_length,1:x_length) = A;
                         
                     otherwise
                         error('Unrecognized method for dealing with eigenvalue > 1')
                 end
+                % Implement eigenvalue changes, keeping sparsity pattern
+                sparsity_pattern = abs(A) < 1e-10;
+                A = V*diag(D)/V;
+                A(sparsity_pattern) = 0;
             end
+            % Don't change the control matrix, B
+            A_orig(1:x_length,1:x_length) = A;
+            A_sep(1:x_length,1:x_length) = A;
             
             self.A_original = A_orig;
             self.A_separate = A_sep;
@@ -855,15 +937,31 @@ classdef AdaptiveDmdc < AbstractDmd
     
     methods % Cross-validation
         function err_vec = calc_baseline_error(self,...
-                num_starts, test_length, seed)
+                num_starts, test_length, to_return_matrix, error_func, seed)
             % Calculates the error for a random set of start points for the
             % same length as the test set
+            % Input:
+            %   num_starts (200) - number of restarts within the training
+            %       dataset
+            %   test_length - percentage of the cross validation window to
+            %       use for the reconstruction errors
+            %   to_return_matrix (false) - to break down the errors by
+            %       neuron; default just averages them
+            %   error_func (L2) - what error function to use; default uses
+            %       the L2 norm for each neuron, i.e. the matrix 'fro' norm
+            %   seed - for rng
             if ~exist('num_starts','var') || isempty(num_starts)
                 num_starts = 200;
             end
-            if ~exist('test_length','var')
+            if ~exist('test_length','var') || isempty(test_length)
                 test_length = round(size(self.dat_cross_val,2) * ...
                     self.cross_val_window_size_percent);
+            end
+            if ~exist('to_return_matrix', 'var') || isempty(to_return_matrix)
+                to_return_matrix = false;
+            end
+            if ~exist('error_func', 'var')
+                error_func = @(x,y) norm(x-y,'fro')/numel(y);
             end
             if ~exist('seed','var')
                 seed = 1;
@@ -872,21 +970,46 @@ classdef AdaptiveDmdc < AbstractDmd
             rng(seed);
             max_start = size(self.dat,2) - test_length;
             t_starts = randi(max_start, [num_starts,1]);
-            err_vec = zeros(num_starts,1);
+            if to_return_matrix
+                err_vec = zeros(self.x_len, num_starts);
+            else
+                err_vec = zeros(num_starts,1);
+            end
             for i=1:num_starts
                 t_span = t_starts(i):(t_starts(i)+test_length);
                 dat_true = self.dat(1:self.x_len, t_span);
                 dat_approx = self.calc_reconstruction_control(...
                     dat_true(:,1), t_span, false);
-                err_vec(i) = norm(dat_true-dat_approx)/numel(dat_approx);
+                if to_return_matrix
+                    for i2 = 1:size(dat_true, 1)
+                        err_vec(i2, i) = ...
+                            error_func(dat_true(i2,:), dat_approx(i2,:));
+                    end
+                else
+                    err_vec(i) = error_func(dat_true, dat_approx);
+                end
             end
         end
         
-        function err = calc_test_error(self, dat_test)
+        function err = calc_test_error(self, ...
+                dat_test, to_return_matrix, error_func)
             % If a cross-validation test set has been set aside, use that
             % as test data
-            if ~exist('dat_test','var')
+            % Input:
+            %   dat_test - defaults to a predetermined set-aside fraction
+            %       of the input dataset, but could be other data of the
+            %       same size
+            %
+            % See also: calc_baseline_error (used to calculate the
+            % distribution)
+            if ~exist('dat_test','var') || isempty(dat_test)
                 dat_test = self.dat_cross_val;
+            end
+            if ~exist('to_return_matrix', 'var') || isempty(to_return_matrix)
+                to_return_matrix = false;
+            end
+            if ~exist('error_func', 'var')
+                error_func = @(x,y) norm(x-y,'fro')/numel(y);
             end
             assert(~isempty(dat_test),'No test data')
             
@@ -895,7 +1018,8 @@ classdef AdaptiveDmdc < AbstractDmd
             self.dat = dat_test;
             if self.cross_val_window_size_percent < 1
                 % Use many random restarts
-                err = self.calc_baseline_error();
+                err = self.calc_baseline_error([], [],...
+                    to_return_matrix, error_func);
             else
                 err = self.calc_reconstruction_error();
             end
@@ -916,7 +1040,8 @@ classdef AdaptiveDmdc < AbstractDmd
                 tspan = linspace(0,num_frames*self.dt,num_frames+1);
             end
             
-            A = self.A_original;
+            ind = 1:self.x_len;
+            A = self.A_original(ind, ind);
             
             dat_approx = zeros(length(x0), length(tspan));
             dat_approx(:,1) = x0;
@@ -926,10 +1051,18 @@ classdef AdaptiveDmdc < AbstractDmd
         end
         
         function dat_approx = calc_reconstruction_control(self,...
-                x0, t_ind, include_control_signal)
+                x0, t_ind, which_control_signals, return_control_signal)
             % Reconstructs the data using the partial DMD propagator matrix
-            % starting from the first data point using the 'outlier' rows
-            % as control signals
+            % starting from the first data point using control signals
+            %
+            % Input:
+            %   x0 - the initial point. Default is the x0 for the entire
+            %       dataset
+            %   t_ind - a list of t points. Default is entire dataset
+            %   which_control_signals - a list of which control signals to
+            %       use. Default is all of them
+            %   return_control_signal (false) - boolean for returning the
+            %       control signals as part of the reconstruction
             if ~exist('x0','var') || isempty(x0)
                 x0 = self.dat(:,1);
             end
@@ -937,8 +1070,17 @@ classdef AdaptiveDmdc < AbstractDmd
                 t_ind = 1:size(self.dat,2);
 %                 tspan = linspace(0,num_frames*self.dt,num_frames);
             end
-            if ~exist('include_control_signal','var')
-                include_control_signal = false;
+            if ~exist('which_control_signals', 'var')
+                which_control_signals = []; % i.e. all of them
+            end
+            if ~exist('return_control_signal','var')
+                return_control_signal = false;
+            end
+            
+            if self.dmd_offset>1
+                dat_approx = self.calc_reconstruction_offset(...
+                    [], [], return_control_signal);
+                return
             end
             
             ind = 1:self.x_len;
@@ -950,7 +1092,7 @@ classdef AdaptiveDmdc < AbstractDmd
                 B = self.A_thresholded(ind, self.x_len+1:end);
             end
             
-            if include_control_signal
+            if return_control_signal
                 dat_approx = zeros(length(x0), length(t_ind));
                 % bottom rows are not reconstructed; taken as given
                 dat_approx(self.x_len+1:end,:) = ...
@@ -960,9 +1102,56 @@ classdef AdaptiveDmdc < AbstractDmd
                 dat_approx = zeros(self.x_len, length(t_ind));
                 dat_approx(:,1) = x0(1:self.x_len);
             end
-            for i=2:length(t_ind)
+            if isempty(which_control_signals)
+                for i=2:length(t_ind)
+                    u = self.dat(self.x_len+1:end, t_ind(i-1));
+                    dat_approx(1:self.x_len, i) = ...
+                        A*dat_approx(1:self.x_len, i-1) + B*u;
+                end
+            else
+                B = B(:, which_control_signals);
+                for i=2:length(t_ind)
+                    u = self.dat(self.x_len+1:end, t_ind(i-1));
+                    u = u(which_control_signals, :);
+                    dat_approx(1:self.x_len, i) = ...
+                        A*dat_approx(1:self.x_len, i-1) + B*u;
+                end
+            end
+        end
+        
+        function dat_approx = calc_reconstruction_offset(self,...
+                x0, t_ind, include_control_signal)
+            % Reconstructs the data using the partial DMD propagator matrix
+            % starting from the first data point using the 'outlier' rows
+            % as control signals
+            %   Modification: for use when dmd_offset>1
+            if ~exist('x0','var') || isempty(x0)
+                x0 = self.dat(:, 1:self.dmd_offset);
+            end
+            if ~exist('t_ind','var') || isempty(t_ind)
+                t_ind = 1:(size(self.dat,2)-self.dmd_offset+1);
+            end
+            if ~exist('include_control_signal','var')
+                include_control_signal = false;
+            end
+            
+            ind = 1:self.x_len;
+            A = self.A_separate(ind, ind);
+            B = self.A_separate(ind, self.x_len+1:end);
+            
+            if include_control_signal
+                dat_approx = zeros(length(x0), length(t_ind));
+                % bottom rows are not reconstructed; taken as given
+                dat_approx(self.x_len+1:end, :) = ...
+                    self.dat(self.x_len+1:end, :);
+                dat_approx(:, 1:self.dmd_offset) = x0;
+            else
+                dat_approx = zeros(self.x_len, length(t_ind));
+                dat_approx(:, 1:self.dmd_offset) = x0(1:self.x_len,:);
+            end
+            for i = 2:length(t_ind)
                 u = self.dat(self.x_len+1:end, t_ind(i-1));
-                dat_approx(1:self.x_len, i) = ...
+                dat_approx(1:self.x_len, i+self.dmd_offset-1) = ...
                     A*dat_approx(1:self.x_len, i-1) + B*u;
             end
         end
@@ -1001,7 +1190,7 @@ classdef AdaptiveDmdc < AbstractDmd
             switch which_norm
                 case '2norm'
                     error_approx = ...
-                        norm(dat_approx-dat_original)/numel(dat_approx);
+                        norm(dat_approx-dat_original, 'fro')/numel(dat_approx);
                     
                 case 'Inf'
                     error_approx = ...
@@ -1025,6 +1214,9 @@ classdef AdaptiveDmdc < AbstractDmd
                     error_approx(set_to_zero_ind) = 0;
                     error_approx = norm(error_approx) / ...
                         length(find(set_to_zero_ind));
+                    
+                case 'residual_vector'
+                    error_approx = dat_approx-dat_original;
                     
                 otherwise
                     error('Unknown error metric')
@@ -1205,7 +1397,7 @@ classdef AdaptiveDmdc < AbstractDmd
                     neuron_ind = self.u_sort_ind(sorted_neuron_ind);
                 end
                 if isempty(sorted_neuron_ind)
-                    error('Attempted to plot a neuron outside of the dataset (might be in the controller')
+                    error('Attempted to plot a neuron outside of the dataset (might be in the controller)')
                 end
             else
                 sorted_neuron_ind = 0;
@@ -1213,7 +1405,7 @@ classdef AdaptiveDmdc < AbstractDmd
             
             if use_control
                 if ~include_control_signal
-                    assert(sorted_neuron_ind<self.x_len,...
+                    assert(sorted_neuron_ind<=self.x_len,...
                         'If you really meant to plot a controller neuron, set include_control_signal=true')
                     full_dat = self.dat(1:self.x_len,:);
                     title_str = 'Reconstructed data (with control; signal not shown)';
@@ -1224,7 +1416,7 @@ classdef AdaptiveDmdc < AbstractDmd
                     full_dat = self.dat;
                 end
                 dat_approx = self.calc_reconstruction_control(...
-                    [],[],include_control_signal);
+                    [],[],[],include_control_signal);
             else
                 full_dat = self.dat;
                 dat_approx = self.calc_reconstruction_original();
@@ -1246,10 +1438,10 @@ classdef AdaptiveDmdc < AbstractDmd
                     title_str = [title_str ...
                         sprintf('; neuron %d (name=%s)',...
                         neuron_ind, self.get_names(neuron_ind))];
-                    fig = figure('DefaultAxesFontSize',12);
+                    fig = figure('DefaultAxesFontSize',16);
                     hold on
                     plot(full_dat(sorted_neuron_ind,:), 'LineWidth', 2)
-                    plot(real(dat_approx(sorted_neuron_ind,:)), 'LineWidth', 4)
+                    plot(real(dat_approx(sorted_neuron_ind,:)), 'LineWidth', 3)
                     legend({'Original data','Reconstructed trajectory'})
                     ylabel('Amplitude')
                     xlabel('Time')
