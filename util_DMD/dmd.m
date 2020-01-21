@@ -40,6 +40,9 @@ function [ coeff, Omega, Phi, romA, U, S, V ] = dmd( dat, dt,...
 
 
 %% Defaults
+if ~exist('dt', 'var') || isempty(dt)
+    dt = 1;
+end
 if ~exist('useScaling','var') || isempty(useScaling)
     useScaling = false;
 end
